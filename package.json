@@ -1,6 +1,6 @@
 {
   "name": "xhs-simulator-plugin",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -10,6 +10,7 @@
     "probe:widget": "node ./scripts/probe-widget-contract.mjs",
     "probe:mcp": "node ./scripts/probe-mcp.mjs",
     "probe:mcp:cold": "node ./scripts/probe-cold-install.mjs",
+    "probe:copy": "python3 ./scripts/probe-widget-copy.py",
     "quality": "npm run build && npm run check:artifacts && npm run probe:widget && npm run probe:mcp && npm run probe:mcp:cold"
   },
   "dependencies": {

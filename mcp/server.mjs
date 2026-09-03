@@ -31,6 +31,13 @@ const manifest = JSON.parse(
 
 const behaviorSchema = z.enum(["划走", "点赞", "收藏", "评论", "分享"]);
 const attitudeSchema = z.enum(["种草", "观望", "质疑", "反感", "无感"]);
+const reactionSchema = z.object({
+  id: z.string(),
+  relevance: z.number().min(0).max(1),
+  behavior: behaviorSchema,
+  attitude: attitudeSchema,
+  trigger: z.string(),
+});
 const quotaSchema = z.object({
   label: z.string().trim().min(1),
   pct: z.number().min(0).max(100),
@@ -40,7 +47,7 @@ const server = new McpServer(
   { name: manifest.name, version: manifest.version },
   {
     instructions:
-      "Open the XHS Simulator with render_xhs_simulator_widget. The widget sends simulation and selection requests back to Codex. Use get_xhs_personas/get_xhs_run as inputs, then save results with save_xhs_run/save_xhs_selection. Never require an API key.",
+      "Open the XHS Simulator with render_xhs_simulator_widget. The widget sends simulation and selection requests back to Codex. Use get_xhs_personas/get_xhs_run as inputs. Before generating initial comments, pass raw reactions to calibrate_xhs_reactions exactly once, then save calibrated reactions and comments with save_xhs_run. Save selections with save_xhs_selection. Never require an API key.",
   },
 );
 
@@ -56,6 +63,7 @@ function registerWidget() {
   const resourceMeta = {
     ui: {
       prefersBorder: false,
+      permissions: { clipboardWrite: {} },
       csp: { connectDomains: [], resourceDomains: [] },
     },
     "openai/widgetDescription": "小红书笔记发布前评论区压力测试工具。",
@@ -127,7 +135,7 @@ function registerPersonaTools() {
       inputSchema: {
         bank: z.string().trim().optional(),
         personaIds: z.array(z.string().trim().min(1)).optional(),
-        passerby: z.number().int().min(0).max(10).optional(),
+        passerby: z.number().int().min(0).max(40).optional(),
         seed: z.number().int().optional(),
         includeSamples: z.boolean().optional(),
       },
@@ -140,7 +148,7 @@ function registerPersonaTools() {
         bank,
         personaIds: input.personaIds,
         passerby: input.passerby || 0,
-        seed: input.seed || 42,
+        seed: input.seed ?? 42,
       });
       const output = personas.map((persona) =>
         input.includeSamples ? persona : personaSummary(persona),
@@ -149,6 +157,45 @@ function registerPersonaTools() {
         { bank, personas: output },
         `已读取 ${output.length} 个人设。`,
       );
+    },
+  );
+
+  server.registerTool(
+    "calibrate_xhs_reactions",
+    {
+      title: "校准首轮参与反应",
+      description: "生成首评之前调用。传入覆盖完整参与人设的原始反应；按 seed 对被判为评论的非常驻路人进行 45% 概率保留，其余降为点赞。返回校准反应和首评名单。重试必须使用同一份原始反应，不得将已校准结果再次输入。",
+      inputSchema: {
+        bank: z.string().trim().optional(),
+        personaIds: z.array(z.string().trim().min(1)).min(1),
+        passerby: z.number().int().min(0).max(40),
+        seed: z.number().int(),
+        reactions: z.array(reactionSchema),
+      },
+      annotations: readOnlyAnnotations(),
+      _meta: { ui: { visibility: ["model"] } },
+    },
+    async (input) => {
+      const participants = await selectPersonas({ ...input, bank: input.bank || "personas_milk.yaml" });
+      const raw = validateReactions(input.reactions, participants);
+      const random = seededRandom(input.seed);
+      const downgraded = [];
+      const reactions = participants.map((persona, index) => {
+        const reaction = { ...raw[index] };
+        if (persona.always_active) reaction.behavior = "评论";
+        else if (persona.source === "passerby" && reaction.behavior === "评论" && random() > 0.45) {
+          reaction.behavior = "点赞";
+          downgraded.push(persona.id);
+        }
+        return reaction;
+      });
+      const firstCommentIds = reactions.filter((reaction) => reaction.behavior === "评论").map((reaction) => reaction.id);
+      return dataResult({
+        reactions,
+        first_comment_persona_ids: firstCommentIds,
+        downgraded_persona_ids: downgraded,
+        passerby_comment_keep_probability: 0.45,
+      }, `首评名单 ${firstCommentIds.length} 人；${downgraded.length} 位路人降为点赞。保存时直接使用这些反应，不再校准。`);
     },
   );
 }
@@ -204,7 +251,7 @@ function registerRunTools() {
         settings: z.object({
           personaIds: z.array(z.string().trim().min(1)).min(1),
           rounds: z.number().int().min(1).max(8),
-          passerby: z.number().int().min(0).max(10),
+          passerby: z.number().int().min(0).max(40),
           seed: z.number().int(),
           bank: z.string().trim().optional(),
         }),
@@ -217,15 +264,7 @@ function registerRunTools() {
           target_audience_hints: z.array(z.string()),
           tone: z.string(),
         }),
-        reactions: z.array(
-          z.object({
-            id: z.string(),
-            relevance: z.number().min(0).max(1),
-            behavior: behaviorSchema,
-            attitude: attitudeSchema,
-            trigger: z.string(),
-          }),
-        ),
+        reactions: z.array(reactionSchema),
         comments: z.array(
           z.object({
             cid: z.number().int().positive(),
@@ -260,6 +299,7 @@ function registerRunTools() {
       });
       const personaById = new Map(participants.map((persona) => [persona.id, persona]));
       const reactions = validateReactions(input.reactions, participants);
+      validateFirstComments(input.comments, reactions, participants);
       const comments = normalizeComments(input.comments, personaById, input.settings);
       assignLikes(comments, input.settings.seed);
 
@@ -427,11 +467,28 @@ function validateReactions(reactions, participants) {
   const byId = new Map();
   for (const reaction of reactions) {
     if (!expected.has(reaction.id)) throw new Error(`反应包含未参与人设：${reaction.id}`);
+    if (byId.has(reaction.id)) throw new Error(`人设反应重复：${reaction.id}`);
     byId.set(reaction.id, reaction);
   }
   const missing = [...expected].filter((id) => !byId.has(id));
   if (missing.length) throw new Error(`缺少人设反应：${missing.join(", ")}`);
   return participants.map((persona) => byId.get(persona.id));
+}
+
+function validateFirstComments(comments, reactions, participants) {
+  const expected = new Set(reactions.filter((reaction) => reaction.behavior === "评论").map((reaction) => reaction.id));
+  for (const persona of participants) {
+    if (persona.always_active && !expected.has(persona.id)) throw new Error(`常驻人设必须参与首评：${persona.id}`);
+  }
+  const seen = new Set();
+  for (const comment of comments.filter((item) => item.round === 0)) {
+    if (!expected.has(comment.persona)) throw new Error(`首评人设不在校准后的评论名单中：${comment.persona}`);
+    if (seen.has(comment.persona)) throw new Error(`同一人设首评重复：${comment.persona}`);
+    if (comment.parent != null) throw new Error("round=0 首评必须为顶层评论。");
+    seen.add(comment.persona);
+  }
+  const missing = [...expected].filter((id) => !seen.has(id));
+  if (missing.length) throw new Error(`缺少校准名单的首评：${missing.join(", ")}`);
 }
 
 function normalizeComments(inputComments, personaById, settings) {

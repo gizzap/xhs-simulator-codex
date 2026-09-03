@@ -8,8 +8,8 @@
 
 1. 解析笔记为 `noteCard`：`title/category/selling_points/emotional_hooks/sensitive_points/target_audience_hints/tone`。
 2. 为每个人设生成一条 `reaction`：`id/relevance/behavior/attitude/trigger`。
-3. 仅让 `behavior=评论` 的人设生成首评；`always_active` 人设必须评论。真实分布以划走为多数，评论为少数，但常驻人设除外。
-4. 按请求的 `rounds` 演化回复。冲突、附和、答疑都可以发生；一轮允许无人新增。
+3. 调用 `calibrate_xhs_reactions` 后，以返回的 `reactions` 和 `first_comment_persona_ids` 为准生成首评。每人恰好一条 `round=0, parent=null`；常驻人设必须参与。降为点赞的路人不能再生成首评，但仍可因高相关性在后续轮次加入。
+4. 按请求的 `rounds` 演化互动（round=1 到 rounds）。冲突、附和、答疑都可以发生；一轮允许无人新增，也允许此前未发言者加入与已有参与者再次发言。不要为了凑满人数或十条顶层评论强行发言。
 5. 生成简短 Markdown 风险报告。
 
 ## 反应规则
@@ -19,6 +19,16 @@
 - `relevance` 为 0 到 1。
 - `trigger` 必须落在笔记中的具体点，不能写空泛结论。
 - 非常驻人设参考分布：划走约 60%，点赞 20–30%，收藏 5–10%，评论 3–8%，分享 1–3%。人设与内容高度匹配时可偏离。
+- 上述比例是生成提示，不是统计预测或硬配额。`source=passerby` 为圈外路人，对品类通常无特别兴趣；原始判定应倾向划走或随手点赞，极少评论。
+- 校准工具仅对原始 `behavior=评论` 的非常驻路人应用 45% 保留概率（并非每次恰好留下 45%）；失败降为点赞。目标人设不削弱，`always_active` 强制评论。使用相同原始输入和 seed 可重试复现，但不保证与旧 Python 随机序列逐条一致。
+
+## 后续参与规则
+
+- 候选范围为校准后 `behavior=评论` 或 `relevance>=0.7` 的人设；没有“一人全程只能参与一次”的限制。
+- 参考独立版意愿门控：表达欲乘 0.25–1.0 的意愿扰动，优先选择被回复、被质疑或出现新话题且有新观点的人。这里由 Codex 按语义演化，不声称与 Python 随机门控逐条相同。
+- round=1（页面第 2 轮）不惩罚首评参与者；从 round=2（页面第 3 轮）起，上一轮发言者的参与意愿减半，避免连续刷屏，而非永久排除。
+- 每轮读取现有完整评论树、自己的发言记忆和被谁回复过，避免重复表态。后续可以跟帖，也可用 `parent=null` 发新顶层观点。
+- 增加轮次增加互动机会，不保证参与人数或顶层评论数单调增长。
 
 ## 评论规则
 
@@ -37,10 +47,10 @@
 
 - `requestId`：Widget 请求 ID，原样返回。
 - `noteText`：原文。
-- `settings`：包含 `personaIds/rounds/passerby/seed`。
+- `settings`：包含 `personaIds/bank/rounds/passerby/seed`，不更改 Widget 参数。
 - `noteCard`：阶段 1 的结构化卡片。
-- `reactions`：覆盖所有参与人设。
+- `reactions`：校准工具返回的完整反应，覆盖所有参与人设，不得重写参与行为。
 - `comments`：评论数组。每条含 `cid/persona/attitude/text/parent/round`。
 - `reportMarkdown`：至少包含反应总览、争议预警、FAQ/回复预案和人群洞察。
 
-保存工具会校验人设 ID、父子关系、楼号和枚举值，并补齐人名、来源与点赞。
+保存工具会校验首评名单、重复首评、人设 ID、楼号和枚举值，规范父子关系并补齐人名、来源与点赞。保存阶段不再进行路人抽样或删评论；若首评不一致，按错误提示修正后保存，不能删掉父楼留下断链。

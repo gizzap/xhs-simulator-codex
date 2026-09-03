@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, nextTick, onMounted, ref } from 'vue'
 import {
   Bot, ClipboardCopy, FileText, History, Loader2, PanelLeftClose, PanelLeftOpen, Play, Settings2, Sparkles, Users, Wand2, X,
 } from 'lucide-vue-next'
@@ -13,10 +13,11 @@ import {
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { Progress } from '@/components/ui/progress'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Separator } from '@/components/ui/separator'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { callXhsTool, createRequestId, requestDisplayMode, sendCodexMessage } from '@/lib/codex'
+import { callXhsTool, createRequestId, requestDisplayMode, sendCodexMessage, WIDGET_VERSION } from '@/lib/codex'
 
 // ---------- 类型 ----------
 interface Persona {
@@ -63,7 +64,7 @@ const personas = ref<Persona[]>([])
 const selected = ref<Set<string>>(new Set())
 const noteText = ref('')
 const rounds = ref(3)
-const passerby = ref(3)
+const passerby = ref(5)
 const running = ref(false)
 const stage = ref('')
 const stageDetail = ref('')
@@ -118,7 +119,23 @@ const STAGE_LABEL: Record<string, string> = {
 const selectedCount = computed(() => personas.value.filter(p => selected.value.has(p.id)).length)
 
 // ---------- Codex Widget / MCP ----------
+// 独立运行模式（Safari 等浏览器直接打开，无 Codex 宿主）：直接请求本地 FastAPI
+const standalone = window.parent === window
+
+async function apiGet<T>(path: string): Promise<T> {
+  const r = await fetch(path)
+  if (!r.ok)
+    throw new Error(`${path} 请求失败：${r.status}`)
+  return r.json() as Promise<T>
+}
+
 async function fetchPersonas() {
+  if (standalone) {
+    const data = await apiGet<{ personas: Persona[] }>('/api/personas?bank=personas_milk.yaml')
+    personas.value = data.personas
+    selected.value = new Set(data.personas.map((p: Persona) => p.id))
+    return
+  }
   const data = await callXhsTool<{ personas: Persona[] }>('get_xhs_personas', {
     bank: 'personas_milk.yaml',
   })
@@ -127,6 +144,11 @@ async function fetchPersonas() {
 }
 
 async function fetchHistory() {
+  if (standalone) {
+    const data = await apiGet<{ runs: RunSummary[] }>('/api/runs')
+    historyRuns.value = data.runs
+    return
+  }
   const data = await callXhsTool<{ runs: RunSummary[] }>('list_xhs_runs', { limit: 50 })
   historyRuns.value = data.runs
 }
@@ -139,6 +161,32 @@ async function startSimulation() {
   stage.value = 'init'
   stageDetail.value = ''
   try {
+    // 独立模式：直接调本地 API 并轮询进度
+    if (standalone) {
+      const r = await fetch('/api/simulate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          note_text: noteText.value,
+          persona_ids: [...selected.value],
+          bank: 'personas_milk.yaml',
+          rounds: rounds.value,
+          passerby: passerby.value,
+          seed: Math.floor(Math.random() * 100000),
+        }),
+      })
+      if (!r.ok)
+        throw new Error(`模拟启动失败：${(await r.text()).slice(0, 200)}`)
+      const { run_id: runId } = await r.json()
+      const data = await pollHttpRun(runId)
+      currentRun.value = data
+      currentRunId.value = runId
+      selection.value = null
+      stage.value = 'done'
+      stageDetail.value = `${data.comments?.length ?? 0} 条评论`
+      await fetchHistory()
+      return
+    }
     const requestId = createRequestId('simulate')
     const seed = Math.floor(Math.random() * 100000)
     const payload = {
@@ -179,6 +227,28 @@ ${JSON.stringify(payload)}
   }
 }
 
+/** 独立模式：轮询 /api/runs/{id}/status 并实时更新阶段与进度 */
+async function pollHttpRun(runId: string): Promise<RunDetail> {
+  const stages = ['init', 'voice', 'parse', 'reaction', 'first_comments', 'evolve', 'report', 'done']
+  for (let i = 0; i < 600; i++) {
+    const st = await apiGet<{ status: string, stage?: string, detail?: string, error?: string | null }>(`/api/runs/${runId}/status`)
+    if (st.stage)
+      stage.value = st.stage
+    if (st.detail)
+      stageDetail.value = st.detail
+    if (st.status === 'error')
+      throw new Error(st.error || '模拟失败')
+    if (st.status === 'done') {
+      progressValue.value = 100
+      return await apiGet<RunDetail>(`/api/runs/${runId}`)
+    }
+    const idx = stages.indexOf(st.stage || 'init')
+    progressValue.value = Math.min(95, Math.round(((idx + 1) / stages.length) * 100))
+    await new Promise(resolve => setTimeout(resolve, 2000))
+  }
+  throw new Error('模拟超时')
+}
+
 async function pollRun(requestId: string): Promise<RunDetail & { run_id: string }> {
   for (let attempt = 0; attempt < 300; attempt++) {
     const data = await callXhsTool<(RunDetail & { run_id: string }) | { status: string }>('get_xhs_run', {
@@ -192,7 +262,9 @@ async function pollRun(requestId: string): Promise<RunDetail & { run_id: string 
 }
 
 async function loadRun(runId: string) {
-  currentRun.value = await callXhsTool<RunDetail>('get_xhs_run', { runId })
+  currentRun.value = standalone
+    ? await apiGet<RunDetail>(`/api/runs/${runId}`)
+    : await callXhsTool<RunDetail>('get_xhs_run', { runId })
   currentRunId.value = runId
   selection.value = null // 切换运行时清空筛选态（筛选是会话级视图操作）
 }
@@ -202,6 +274,20 @@ async function runSelect() {
     return
   selecting.value = true
   try {
+    // 独立模式：直接调本地 /api/select（服务端完成 LLM 挑选）
+    if (standalone) {
+      const r = await fetch('/api/select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ run_id: currentRunId.value, instruction: instruction.value }),
+      })
+      const data = await r.json()
+      if (!r.ok)
+        throw new Error(data.detail || `挑选失败：${r.status}`)
+      selection.value = { selected: data.selected ?? [], summary: data.summary ?? '' }
+      showOnlySelected.value = true
+      return
+    }
     const requestId = createRequestId('select')
     await sendCodexMessage(`XHS_WIDGET_SELECT
 这是小红书评论模拟器 Widget 中用户确认发起的评论挑选操作。请使用 xhs-simulator skill 读取运行结果、完成语义判断并保存挑选结果。
@@ -231,29 +317,150 @@ async function pollSelection(requestId: string) {
   throw new Error('等待 Codex 保存挑选结果超时')
 }
 
+// ---------- 复制 + toast ----------
+const toast = ref<{ msg: string, ok: boolean } | null>(null)
+let toastTimer: ReturnType<typeof setTimeout> | undefined
+type CommentRow = { comment: Comment, depth: number }
+const copyOpen = ref(false)
+const copyRows = ref<CommentRow[]>([])
+const copyForTable = ref(false)
+const copyText = computed(() => copyRows.value.map((row, i) => {
+  const text = copyForTable.value ? row.comment.text.replace(/[\r\n\t\u2028\u2029]+/g, ' ') : row.comment.text
+  return `${i + 1}.${copyTag(row)}${text}`
+}).join('\n'))
+
+/** 写剪贴板：优先 Clipboard API，失败（非安全上下文等）则退回 document.execCommand */
+async function writeClipboard(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text)
+    return true
+  }
+  catch {
+    const ta = document.createElement('textarea')
+    const previousFocus = document.activeElement
+    try {
+      ta.value = text
+      ta.readOnly = true
+      ta.style.position = 'fixed'
+      ta.style.opacity = '0'
+      // 弹窗的焦点锁会拦截窗外控件，重试时应在弹窗内部执行。
+      ;(document.querySelector('[role="dialog"]') ?? document.body).appendChild(ta)
+      ta.focus()
+      ta.select()
+      ta.setSelectionRange(0, text.length)
+      return document.execCommand('copy')
+    }
+    catch {
+      return false
+    }
+    finally {
+      ta.remove()
+      if (previousFocus instanceof HTMLElement)
+        previousFocus.focus()
+    }
+  }
+}
+
+function showToast(msg: string, ok = true) {
+  toast.value = { msg, ok }
+  clearTimeout(toastTimer)
+  toastTimer = setTimeout(() => (toast.value = null), 2000)
+}
+
 async function copySelected() {
   if (!currentRun.value?.comments)
     return
-  const picked = currentRun.value.comments.filter(c => selectedCids.value.has(c.cid))
-  // 仅复制评论文案，一行一条——方便直接粘贴进飞书表格（每行自动成一格）
-  const text = picked.map(c => c.text).join('\n')
-  await navigator.clipboard.writeText(text)
+  const picked = allCommentRows.value.filter(r => selectedCids.value.has(r.comment.cid))
+  if (!picked.length) {
+    showToast('没有选中的评论', false)
+    return
+  }
+  copyRows.value = picked
+  await copyPreparedText()
 }
 
 async function copyAllShown() {
-  // 复制当前展示的全部评论（筛选态 = 筛选结果；否则 = 全部评论）
-  const rows: string[] = []
-  for (const { comment: c, replies } of commentTree.value) {
-    rows.push(c.text)
-    for (const r of replies)
-      rows.push(r.text)
-  }
-  if (!rows.length)
+  // 复制当前展示的全部评论（筛选态 = 筛选结果；否则 = 全部评论），带楼层标签记录回复关系
+  const rows = flatComments.value
+  if (!rows.length) {
+    showToast('当前没有可复制的评论', false)
     return
-  await navigator.clipboard.writeText(rows.join('\n'))
+  }
+  copyRows.value = rows
+  await copyPreparedText()
+}
+
+async function copyPreparedText() {
+  const count = copyRows.value.length
+  if (await writeClipboard(copyText.value)) {
+    showToast(`复制成功：${count} 条文案`)
+    return
+  }
+  copyOpen.value = true
+  showToast('自动复制受限，请在复制窗口全选后按 ⌘C / Ctrl+C', false)
+  await selectCopyText()
+}
+
+function openCopyText() {
+  copyRows.value = flatComments.value
+  copyOpen.value = true
+}
+
+async function selectCopyText() {
+  await nextTick()
+  const textarea = document.getElementById('xhs-copy-text')
+  if (textarea instanceof HTMLTextAreaElement) {
+    textarea.focus()
+    textarea.select()
+    textarea.setSelectionRange(0, textarea.value.length)
+  }
 }
 
 // ---------- 渲染辅助 ----------
+/** 楼层标签：第1级[主楼]，第2级[楼中楼]，第3级[楼中楼中楼]…… */
+function floorTag(depth: number): string {
+  return depth === 0 ? '[主楼]' : `[楼${'中楼'.repeat(depth)}]`
+}
+
+/** 复制用标签：未被回复的裸主楼不标 [主楼]（无回复关系可记录），有回复的主楼才标；
+ *  子楼本身即回复，照常标注楼层。以完整评论树判定，筛选不改变楼层身份。
+ *  例外：裸主楼文案以 =+-@ 开头（如"+1"）仍加标签，防止被表格识别成公式。 */
+function copyTag(row: { comment: Comment, depth: number }): string {
+  if (row.depth === 0) {
+    const hasReply = allCommentRows.value.some(r => r.comment.parent === row.comment.cid)
+    if (hasReply)
+      return '[主楼]'
+    return /^[=+\-@]/.test(row.comment.text) ? '[主楼]' : ''
+  }
+  return floorTag(row.depth)
+}
+
+/** 扁平化评论树（按楼层顺序保留深度），渲染与复制共用；深度不限，支持楼中楼中楼… */
+const allCommentRows = computed<CommentRow[]>(() => {
+  if (!currentRun.value?.comments)
+    return []
+  const all = currentRun.value.comments
+  const byParent = new Map<number, Comment[]>()
+  for (const c of all) {
+    const key = c.parent ?? 0
+    byParent.set(key, [...(byParent.get(key) ?? []), c])
+  }
+  const rows: { comment: Comment, depth: number }[] = []
+  const walk = (parent: number, depth: number) => {
+    for (const c of (byParent.get(parent) ?? []).slice().sort((a, b) => b.likes - a.likes)) {
+      rows.push({ comment: c, depth })
+      walk(c.cid, depth + 1)
+    }
+  }
+  walk(0, 0)
+  return rows
+})
+
+// 必须先展开完整树，再筛选；否则未选中的父楼会连同选中的深层回复一起消失。
+const flatComments = computed(() => selection.value && showOnlySelected.value
+  ? allCommentRows.value.filter(row => selectedCids.value.has(row.comment.cid))
+  : allCommentRows.value)
+
 const attitudeColor: Record<string, string> = {
   种草: 'bg-emerald-100 text-emerald-700 border-emerald-200',
   观望: 'bg-amber-100 text-amber-700 border-amber-200',
@@ -271,34 +478,20 @@ function avatarClass(name: string) {
     h = (h * 31 + ch.codePointAt(0)!) % 997
   return avatarBg[h % avatarBg.length]
 }
-/** 顶层评论（按赞数降序），每条挂直接回复列表；筛选态下只保留选中评论 */
-const commentTree = computed(() => {
-  if (!currentRun.value?.comments)
-    return []
-  let all = currentRun.value.comments
-  if (selection.value && showOnlySelected.value)
-    all = all.filter(c => selectedCids.value.has(c.cid))
-  const byParent = new Map<number, Comment[]>()
-  for (const c of all) {
-    const key = c.parent ?? 0
-    byParent.set(key, [...(byParent.get(key) ?? []), c])
-  }
-  const top = (byParent.get(0) ?? []).sort((a, b) => b.likes - a.likes)
-  return top.map(c => ({ comment: c, replies: (byParent.get(c.cid) ?? []).sort((a, b) => a.likes - b.likes) }))
-})
-
 function fmtTime(ts: string) {
   return ts.replace('T', ' ').slice(5, 16)
 }
 
 onMounted(async () => {
   try {
-    await requestDisplayMode('fullscreen').catch(() => undefined)
+    // 独立模式跳过 Widget 握手（requestDisplayMode 会等 MCP 连接，直开时永不返回）
+    if (!standalone)
+      await requestDisplayMode('fullscreen').catch(() => undefined)
     await Promise.all([fetchPersonas(), fetchHistory()])
   }
   catch (e) {
     stage.value = 'error'
-    stageDetail.value = `Widget 初始化失败：${e instanceof Error ? e.message : e}`
+    stageDetail.value = `初始化失败：${e instanceof Error ? e.message : e}`
   }
 })
 </script>
@@ -346,7 +539,7 @@ onMounted(async () => {
           </div>
           <div>
             <h1 class="font-semibold text-[15px] leading-tight">小红书笔记反应模拟器</h1>
-            <p class="text-[11px] text-muted-foreground">发布前评论区压力测试</p>
+            <p class="text-[11px] text-muted-foreground">发布前评论区压力测试 · v{{ WIDGET_VERSION }}</p>
           </div>
         </div>
       </div>
@@ -404,7 +597,7 @@ onMounted(async () => {
         <h2 class="text-sm font-medium">笔记正文</h2>
         <span class="text-xs text-muted-foreground">（贴入待测笔记内容）</span>
       </div>
-      <div class="h-[38%] shrink-0 p-5 pb-2 flex flex-col min-h-0">
+      <div class="h-[49%] shrink-0 p-5 pb-2 flex flex-col min-h-0">
         <Textarea
           v-model="noteText"
           placeholder="把小红书笔记的完整文案粘贴到这里…&#10;&#10;模拟器会推演：哪些人群会被吸引、各自什么态度、评论区会长出哪些讨论和争论。"
@@ -435,7 +628,7 @@ onMounted(async () => {
             <Textarea
               v-model="instruction"
               placeholder="例如：挑出最适合做置顶评论的 5 条 / 选出让品牌方最紧张的质疑评论 / 挑出宝妈们最关心的问题整理成 FAQ"
-              class="flex-1 resize-none text-[13px] leading-5 min-h-[60px] max-h-28"
+              class="flex-1 resize-none text-[13px] leading-5 min-h-[90px] max-h-40"
               :disabled="!currentRun?.comments?.length"
             />
             <Button
@@ -500,7 +693,7 @@ onMounted(async () => {
           <Label class="text-xs text-muted-foreground shrink-0 ml-2">路人注入</Label>
           <div class="flex gap-1">
             <Button
-              v-for="n in [0, 2, 3, 5]"
+              v-for="n in [0, 5, 10, 20, 40]"
               :key="n"
               :variant="passerby === n ? 'default' : 'outline'"
               size="sm"
@@ -563,7 +756,7 @@ onMounted(async () => {
 
       <!-- 结果区：评论区格式 -->
       <div class="flex-1 min-h-0 flex flex-col">
-        <div class="px-4 py-2.5 flex items-center gap-2 border-b shrink-0">
+        <div class="px-4 py-2.5 flex flex-wrap items-center gap-2 border-b shrink-0">
           <Sparkles class="size-4 text-muted-foreground" />
           <h2 class="text-sm font-medium">模拟评论区</h2>
           <template v-if="currentRun?.comments?.length">
@@ -583,7 +776,10 @@ onMounted(async () => {
               @click="copyAllShown"
             >
               <ClipboardCopy class="size-3" />
-              复制全部
+              {{ selection && showOnlySelected ? '复制筛选结果' : '复制全部' }}
+            </Button>
+            <Button variant="ghost" size="sm" class="h-6 text-[11px] px-2" @click="openCopyText">
+              查看复制文本
             </Button>
             <span class="text-[11px] text-muted-foreground ml-auto">
               {{ currentRun.note_card?.category }} · {{ currentRun.note_card?.tone }}
@@ -595,58 +791,44 @@ onMounted(async () => {
             <Bot class="size-8 opacity-30" />
             <p class="text-xs">贴入笔记，点击「开始模拟」</p>
           </div>
-          <div v-else class="p-4 space-y-4">
-            <div v-for="{ comment: c, replies } in commentTree" :key="c.cid">
-              <!-- 顶层评论（筛选态下选中条目高亮） -->
+          <div v-else class="p-4 space-y-3">
+            <!-- 扁平化楼层列表：按深度缩进，支持任意层级的楼中楼中楼… -->
+            <div
+              v-for="row in flatComments"
+              :key="row.comment.cid"
+              :data-comment-id="row.comment.cid"
+              class="flex gap-3 rounded-lg -mx-2 p-2 transition-colors"
+              :class="selection && selectedCids.has(row.comment.cid) ? 'bg-rose-50 ring-1 ring-rose-200' : ''"
+              :style="row.depth > 0 ? { marginLeft: `${row.depth * 24}px` } : undefined"
+            >
               <div
-                class="flex gap-3 rounded-lg -mx-2 p-2 transition-colors"
-                :class="selection && selectedCids.has(c.cid) ? 'bg-rose-50 ring-1 ring-rose-200' : ''"
+                class="rounded-full shrink-0 flex items-center justify-center font-semibold"
+                :class="[row.depth === 0 ? 'size-8 text-xs' : 'size-6 text-[10px]', avatarClass(row.comment.persona_name)]"
               >
-                <div
-                  class="size-8 rounded-full shrink-0 flex items-center justify-center text-xs font-semibold"
-                  :class="avatarClass(c.persona_name)"
-                >
-                  {{ c.persona_name.slice(0, 1) }}
+                {{ row.comment.persona_name.slice(0, 1) }}
+              </div>
+              <div class="flex-1 min-w-0">
+                <div class="flex items-center gap-2 flex-wrap">
+                  <span class="font-medium" :class="row.depth === 0 ? 'text-[13px]' : 'text-xs'">
+                    {{ row.comment.persona_name }}
+                  </span>
+                  <Badge v-if="row.comment.source === 'passerby'" variant="outline" class="h-4.5 px-1.5 text-[10px] text-sky-600 border-sky-200">
+                    路人
+                  </Badge>
+                  <Badge variant="outline" class="h-4.5 px-1.5 text-[10px]" :class="attitudeColor[row.comment.attitude] ?? ''">
+                    {{ row.comment.attitude }}
+                  </Badge>
+                  <Badge v-if="row.depth >= 2" variant="secondary" class="h-4.5 px-1.5 text-[10px] font-normal text-muted-foreground">
+                    {{ floorTag(row.depth) }}
+                  </Badge>
                 </div>
-                <div class="flex-1 min-w-0">
-                  <div class="flex items-center gap-2 flex-wrap">
-                    <span class="text-[13px] font-medium">{{ c.persona_name }}</span>
-                    <Badge v-if="c.source === 'passerby'" variant="outline" class="h-4.5 px-1.5 text-[10px] text-sky-600 border-sky-200">
-                      路人
-                    </Badge>
-                    <Badge variant="outline" class="h-4.5 px-1.5 text-[10px]" :class="attitudeColor[c.attitude] ?? ''">
-                      {{ c.attitude }}
-                    </Badge>
-                  </div>
-                  <p class="text-[14px] leading-6 mt-1 break-words">{{ c.text }}</p>
-                  <div class="flex items-center gap-3 mt-1.5 text-[11px] text-muted-foreground">
-                    <span>👍 {{ c.likes }}</span>
-                    <span>第{{ c.round === 0 ? '一' : c.round + 1 }}轮</span>
-                    <span>#{{ c.cid }}</span>
-                  </div>
-                  <!-- 楼中楼回复 -->
-                  <div v-if="replies.length" class="mt-2 space-y-2 border-l-2 border-zinc-100 pl-3">
-                    <div v-for="r in replies" :key="r.cid" class="flex gap-2">
-                      <div
-                        class="size-6 rounded-full shrink-0 flex items-center justify-center text-[10px] font-semibold"
-                        :class="avatarClass(r.persona_name)"
-                      >
-                        {{ r.persona_name.slice(0, 1) }}
-                      </div>
-                      <div class="flex-1 min-w-0">
-                        <div class="flex items-center gap-1.5 flex-wrap">
-                          <span class="text-xs font-medium">{{ r.persona_name }}</span>
-                          <Badge variant="outline" class="h-4 px-1 text-[9px]" :class="attitudeColor[r.attitude] ?? ''">
-                            {{ r.attitude }}
-                          </Badge>
-                        </div>
-                        <p class="text-[13px] leading-5 mt-0.5 break-words">{{ r.text }}</p>
-                        <div class="flex items-center gap-2 mt-1 text-[10px] text-muted-foreground">
-                          <span>👍 {{ r.likes }}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
+                <p class="break-words whitespace-pre-wrap" :class="row.depth === 0 ? 'text-[14px] leading-6 mt-1' : 'text-[13px] leading-5 mt-0.5'">
+                  {{ row.comment.text }}
+                </p>
+                <div class="flex items-center gap-3 mt-1.5 text-[11px] text-muted-foreground">
+                  <span>👍 {{ row.comment.likes }}</span>
+                  <span>第{{ row.comment.round === 0 ? '一' : row.comment.round + 1 }}轮</span>
+                  <span>#{{ row.comment.cid }}</span>
                 </div>
               </div>
             </div>
@@ -654,5 +836,45 @@ onMounted(async () => {
         </div>
       </div>
     </section>
+
+    <Dialog v-model:open="copyOpen">
+      <DialogContent class="sm:max-w-2xl" @open-auto-focus.prevent="selectCopyText">
+        <DialogHeader>
+          <DialogTitle>复制评论 · {{ copyRows.length }} 条</DialogTitle>
+          <DialogDescription>
+            保留序号和原始楼层标签。若自动复制被宿主拦截，点击「全选文本」后按 ⌘C / Ctrl+C，再到目标位置粘贴。
+          </DialogDescription>
+        </DialogHeader>
+        <div class="flex items-center gap-2">
+          <Switch id="xhs-copy-table" v-model="copyForTable" aria-label="表格格式（每条一行）" />
+          <Label for="xhs-copy-table">表格格式（每条一行）</Label>
+        </div>
+        <p class="text-xs text-muted-foreground">
+          {{ copyForTable ? '仅合并单条评论内的换行和制表符，适合粘贴进表格的一列。' : '保留评论原文中的换行，序号用于区分每条评论。' }}
+        </p>
+        <Textarea id="xhs-copy-text" :model-value="copyText" readonly aria-label="待复制评论" class="h-72 resize-y overflow-auto" />
+        <div class="flex gap-2">
+          <Button variant="outline" @click="selectCopyText">全选文本</Button>
+          <Button @click="copyPreparedText"><ClipboardCopy class="size-4" /> 再次复制</Button>
+        </div>
+      </DialogContent>
+    </Dialog>
+
+    <!-- 复制结果 toast -->
+    <Transition
+      enter-active-class="transition duration-200 ease-out"
+      enter-from-class="opacity-0 translate-y-2"
+      leave-active-class="transition duration-150 ease-in"
+      leave-to-class="opacity-0"
+    >
+      <div
+        v-if="toast"
+        role="status"
+        class="fixed bottom-6 left-1/2 -translate-x-1/2 z-50 rounded-full px-4 py-2 text-[13px] shadow-lg flex items-center gap-2"
+        :class="toast.ok ? 'bg-zinc-900 text-white' : 'bg-red-600 text-white'"
+      >
+        <span>{{ toast.msg }}</span>
+      </div>
+    </Transition>
   </div>
 </template>

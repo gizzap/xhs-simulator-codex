@@ -47,6 +47,7 @@ codex plugin add xhs-simulator@xhs-simulator-github
 
 ```bash
 npm install
+npm --prefix web install
 npm run quality
 python3 /path/to/plugin-creator/scripts/validate_plugin.py .
 python3 /path/to/skill-creator/scripts/quick_validate.py skills/xhs-simulator
@@ -60,9 +61,24 @@ python3 /path/to/skill-creator/scripts/quick_validate.py skills/xhs-simulator
 ```bash
 python3 scripts/probe-widget-render.py
 python3 scripts/probe-widget-render.py mcp/generated/xhs-widget.html --same-origin
+npm run probe:copy
 ```
 
 浏览器测试执行实际发布 HTML，覆盖 iframe 可见性、初始化握手、人设加载、侧栏折叠、全屏请求和模拟消息交接；宿主与工具数据使用本地测试夹具，不调用模型。MCP 工具返回成功不能代替 Codex 客户端中的实际显示确认。
+
+复制回归会向系统剪贴板写入虚构测试评论，然后通过键盘粘贴验证内容；不会读取原有剪贴板，测试会覆盖它。覆盖允许权限的 Clipboard API、权限被禁止时的 execCommand、两者失败时的手动全选复制，以及不带 allow-same-origin 的严格沙箱。测试按完整 18 条、孤立深层筛选、表格单行格式逐条断言，不以 Toast 代替真实粘贴。
+
+同一回归还覆盖独立浏览器的 `/api` 数据通道，使用虚构数据，不请求本机旧服务或实际模型。
+
+### 复制权限与后备入口
+
+资源元数据声明 `_meta.ui.permissions.clipboardWrite = {}`，由宿主决定是否为 iframe 授权；不能把资源权限放到工具元数据里。宿主未授权也不影响手动全选与快捷键复制。新版标题显示 v0.2.0，便于确认没有继续使用旧 Widget。
+
+「表格格式」只影响复制文本，不改历史结果。关闭时保留原文换行；开启时将评论内换行、制表符合并成空格，一条评论对应一行。复制文本保留序号与楼层深度标签；单独复制回复不会自动附带未选中的父楼。
+
+### 参与校准
+
+Skill 先产生完整原始反应，再调用 `calibrate_xhs_reactions`；MCP 对被判为评论的非常驻路人做 0.45 概率保留，并返回首评名单。目标人设不削弱，常驻人设强制参与。保存校准后反应时只验证首评一致性，不再抽样或删除评论。seed=0 有效，同一原始输入可确定性重试。后续发言疲劳由 Skill 约束，不声称与 Python 随机算法逐条一致。
 
 ## 实现说明
 
