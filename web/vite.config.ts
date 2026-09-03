@@ -7,6 +7,9 @@ export default defineConfig({
   plugins: [vue(), tailwindcss()],
   build: {
     modulePreload: { polyfill: false },
+    rollupOptions: {
+      output: { inlineDynamicImports: true },
+    },
   },
   resolve: {
     alias: {

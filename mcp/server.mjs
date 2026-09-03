@@ -4,6 +4,11 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  RESOURCE_MIME_TYPE,
+  registerAppResource,
+  registerAppTool,
+} from "@modelcontextprotocol/ext-apps/server";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { parse as parseYaml } from "yaml";
@@ -19,7 +24,6 @@ const SELECTIONS_DIR = join(DATA_DIR, "selections");
 const LEGACY_RUNS_DIR = join(ROOT_DIR, "data", "runs");
 const WIDGET_URI = "ui://widget/xhs-simulator/index.html";
 const WIDGET_PATH = join(ROOT_DIR, "mcp", "generated", "xhs-widget.html");
-const MIME_TYPE = "text/html;profile=mcp-app";
 
 const manifest = JSON.parse(
   readFileSync(join(ROOT_DIR, ".codex-plugin", "plugin.json"), "utf8"),
@@ -49,26 +53,33 @@ const transport = new StdioServerTransport();
 await server.connect(transport);
 
 function registerWidget() {
-  server.registerResource("xhs-simulator-widget", WIDGET_URI, {}, async () => ({
+  const resourceMeta = {
+    ui: {
+      prefersBorder: false,
+      csp: { connectDomains: [], resourceDomains: [] },
+    },
+    "openai/widgetDescription": "小红书笔记发布前评论区压力测试工具。",
+    "openai/widgetPrefersBorder": false,
+    "openai/widgetCSP": { connect_domains: [], resource_domains: [] },
+  };
+
+  registerAppResource(server, "xhs-simulator-widget", WIDGET_URI, {
+    title: "小红书评论模拟器",
+    description: "小红书笔记发布前评论区压力测试工具。",
+    _meta: resourceMeta,
+  }, async () => ({
     contents: [
       {
         uri: WIDGET_URI,
-        mimeType: MIME_TYPE,
+        mimeType: RESOURCE_MIME_TYPE,
         text: await readFile(WIDGET_PATH, "utf8"),
-        _meta: {
-          ui: {
-            prefersBorder: false,
-            csp: { connectDomains: [], resourceDomains: [] },
-          },
-          "openai/widgetDescription": "小红书笔记发布前评论区压力测试工具。",
-          "openai/widgetPrefersBorder": false,
-          "openai/widgetCSP": { connect_domains: [], resource_domains: [] },
-        },
+        _meta: resourceMeta,
       },
     ],
   }));
 
-  server.registerTool(
+  registerAppTool(
+    server,
     "render_xhs_simulator_widget",
     {
       title: "打开小红书评论模拟器",

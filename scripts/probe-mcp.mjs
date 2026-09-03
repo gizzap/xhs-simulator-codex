@@ -38,11 +38,19 @@ try {
     if (!names.has(name)) throw new Error(`缺少 MCP 工具：${name}`);
   }
 
+  const renderTool = listed.tools.find((tool) => tool.name === "render_xhs_simulator_widget");
+  if (renderTool?._meta?.ui?.resourceUri !== "ui://widget/xhs-simulator/index.html") {
+    throw new Error("Widget 工具缺少 MCP Apps resourceUri。");
+  }
+
   const render = await client.callTool({ name: "render_xhs_simulator_widget", arguments: {} });
   if (render._meta?.["openai/outputTemplate"] !== "ui://widget/xhs-simulator/index.html") {
     throw new Error("Widget outputTemplate 不正确。");
   }
   const resource = await client.readResource({ uri: "ui://widget/xhs-simulator/index.html" });
+  if (resource.contents?.[0]?.mimeType !== "text/html;profile=mcp-app") {
+    throw new Error("Widget 资源 MIME 类型不符合 MCP Apps 规范。");
+  }
   if (!resource.contents?.[0]?.text?.includes("小红书笔记反应模拟器")) {
     throw new Error("Widget 资源没有包含应用标题。");
   }

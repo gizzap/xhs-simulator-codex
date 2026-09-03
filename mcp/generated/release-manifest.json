@@ -1,8 +1,8 @@
 {
-  "version": "0.1.0",
+  "version": "0.1.1",
   "generatedBy": "scripts/build-plugin.mjs",
   "artifacts": {
-    "xhs-widget.html": "e06a60360e84ee8cc53912ec48bf13aaf0b1b12abafcdabeecbf81f444f43932",
-    "xhs-mcp.mjs": "1a7b16928e367276ba9d1db83a1d457610b1c08909cc375fa01a08181675a742"
+    "xhs-widget.html": "7bc537aaf59a95845f4aaa8c098fe91278bd3fbd3c9b2cbcbe4dc9ea57f4669f",
+    "xhs-mcp.mjs": "26c5fe442fa4bfe0e8b3814f8ca3ea6ecfa5caea574c6b49a54f4db7f76496f6"
   }
 }
