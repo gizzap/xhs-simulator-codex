@@ -1,6 +1,6 @@
 {
   "name": "xhs-simulator",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "在 Codex 中打开本地小红书评论区压力测试 Widget，使用当前 Codex 会话完成模拟。",
   "author": {
     "name": "gizzap",

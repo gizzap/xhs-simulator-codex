@@ -56,7 +56,8 @@ interface RunDetail {
   timestamp: string
   model: string
   comments: Comment[]
-  note_card: { category?: string, tone?: string, summary?: string }
+  note_text?: string
+  note_card: { title?: string, category?: string, tone?: string, summary?: string, selling_points?: string[] }
 }
 
 // ---------- 状态 ----------
@@ -73,10 +74,11 @@ const currentRun = ref<RunDetail | null>(null)
 const historyRuns = ref<RunSummary[]>([])
 const historyOpen = ref(false)
 
-// 左栏折叠状态（持久化）
-const leftCollapsed = ref(false)
+// 左栏折叠状态（持久化；默认收起）
+const leftCollapsed = ref(true)
 try {
-  leftCollapsed.value = localStorage.getItem('xhs_left_collapsed') === '1'
+  const saved = localStorage.getItem('xhs_left_collapsed')
+  leftCollapsed.value = saved === null ? true : saved === '1'
 }
 catch { /* Widget 沙箱可能禁止本地存储；折叠偏好不应阻止页面启动。 */ }
 
@@ -262,11 +264,21 @@ async function pollRun(requestId: string): Promise<RunDetail & { run_id: string 
 }
 
 async function loadRun(runId: string) {
-  currentRun.value = standalone
-    ? await apiGet<RunDetail>(`/api/runs/${runId}`)
-    : await callXhsTool<RunDetail>('get_xhs_run', { runId })
-  currentRunId.value = runId
-  selection.value = null // 切换运行时清空筛选态（筛选是会话级视图操作）
+  try {
+    const run = standalone
+      ? await apiGet<RunDetail>(`/api/runs/${runId}`)
+      : await callXhsTool<RunDetail>('get_xhs_run', { runId })
+    currentRun.value = run
+    currentRunId.value = runId
+    noteText.value = run.note_text ?? ''
+    selection.value = null // 切换运行时清空筛选态（筛选是会话级视图操作）
+    historyOpen.value = false
+    if (!run.note_text)
+      showToast('这条历史未保存笔记原文，请重新粘贴正文。', false)
+  }
+  catch (e) {
+    showToast(`历史加载失败：${e instanceof Error ? e.message : e}`, false)
+  }
 }
 
 async function runSelect() {
@@ -484,9 +496,9 @@ function fmtTime(ts: string) {
 
 onMounted(async () => {
   try {
-    // 独立模式跳过 Widget 握手（requestDisplayMode 会等 MCP 连接，直开时永不返回）
+    // 展示模式切换可能等待宿主，不能阻塞人设和历史加载。
     if (!standalone)
-      await requestDisplayMode('fullscreen').catch(() => undefined)
+      void requestDisplayMode('fullscreen').catch(() => undefined)
     await Promise.all([fetchPersonas(), fetchHistory()])
   }
   catch (e) {
@@ -674,6 +686,38 @@ onMounted(async () => {
         <div class="flex items-center gap-2">
           <Settings2 class="size-4 text-muted-foreground" />
           <h2 class="text-sm font-medium">运行控制</h2>
+          <Dialog v-model:open="historyOpen">
+            <DialogTrigger as-child>
+              <Button variant="outline" size="sm" class="h-7 shrink-0">
+                <History class="size-3.5" /> 生成历史
+              </Button>
+            </DialogTrigger>
+            <DialogContent class="max-w-lg">
+              <DialogHeader>
+                <DialogTitle>历史运行记录</DialogTitle>
+                <DialogDescription>点击任意一次运行，恢复关联的笔记正文和评论结果</DialogDescription>
+              </DialogHeader>
+              <div class="max-h-[60vh] overflow-y-auto -mx-2 px-2">
+                <div
+                  v-for="r in historyRuns"
+                  :key="r.run_id"
+                  class="flex items-center gap-3 rounded-lg border p-3 mb-2 cursor-pointer hover:bg-zinc-50"
+                  @click="loadRun(r.run_id)"
+                >
+                  <div class="flex-1 min-w-0">
+                    <p class="text-[13px] truncate">{{ r.summary || '（无摘要）' }}</p>
+                    <p class="text-[11px] text-muted-foreground mt-0.5">
+                      {{ fmtTime(r.timestamp) }} · {{ r.category }} · {{ r.n_comments }} 条评论
+                    </p>
+                  </div>
+                  <Badge v-if="r.tone" variant="secondary" class="shrink-0">{{ r.tone }}</Badge>
+                </div>
+                <p v-if="!historyRuns.length" class="text-center text-xs text-muted-foreground py-8">
+                  还没有历史记录，先跑一次模拟吧
+                </p>
+              </div>
+            </DialogContent>
+          </Dialog>
         </div>
         <div class="flex items-center gap-3">
           <Label class="text-xs text-muted-foreground shrink-0">互动轮次</Label>
@@ -704,38 +748,6 @@ onMounted(async () => {
               {{ n }}
             </Button>
           </div>
-          <Dialog v-model:open="historyOpen">
-            <DialogTrigger as-child>
-              <Button variant="outline" size="sm" class="ml-auto h-7">
-                <History class="size-3.5" /> 生成历史
-              </Button>
-            </DialogTrigger>
-            <DialogContent class="max-w-lg">
-              <DialogHeader>
-                <DialogTitle>历史运行记录</DialogTitle>
-                <DialogDescription>点击任意一次运行加载其评论结果</DialogDescription>
-              </DialogHeader>
-              <div class="max-h-[60vh] overflow-y-auto -mx-2 px-2">
-                <div
-                  v-for="r in historyRuns"
-                  :key="r.run_id"
-                  class="flex items-center gap-3 rounded-lg border p-3 mb-2 cursor-pointer hover:bg-zinc-50"
-                  @click="loadRun(r.run_id); historyOpen = false"
-                >
-                  <div class="flex-1 min-w-0">
-                    <p class="text-[13px] truncate">{{ r.summary || '（无摘要）' }}</p>
-                    <p class="text-[11px] text-muted-foreground mt-0.5">
-                      {{ fmtTime(r.timestamp) }} · {{ r.category }} · {{ r.n_comments }} 条评论
-                    </p>
-                  </div>
-                  <Badge v-if="r.tone" variant="secondary" class="shrink-0">{{ r.tone }}</Badge>
-                </div>
-                <p v-if="!historyRuns.length" class="text-center text-xs text-muted-foreground py-8">
-                  还没有历史记录，先跑一次模拟吧
-                </p>
-              </div>
-            </DialogContent>
-          </Dialog>
         </div>
         <Button
           class="w-full"

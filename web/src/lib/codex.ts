@@ -1,6 +1,6 @@
 import { App } from '@modelcontextprotocol/ext-apps'
 
-export const WIDGET_VERSION = '0.2.0'
+export const WIDGET_VERSION = '0.2.1'
 
 interface ToolCallResult<T> {
   structuredContent?: T
@@ -19,7 +19,17 @@ const app = standalone
       { availableDisplayModes: ['inline', 'fullscreen'] },
       { autoResize: true, strict: true },
     )
-const appReady = app ? app.connect().then(() => app) : null
+const appReady = app ? app.connect().then(() => {
+  // 隐藏 iframe 的动画帧可能暂停，首次尺寸不能只依赖 SDK 的 autoResize。
+  const dimensions = app.getHostContext()?.containerDimensions
+  const width = dimensions && 'width' in dimensions ? dimensions.width : window.innerWidth
+  const height = dimensions && 'height' in dimensions ? dimensions.height : window.innerHeight
+  void app.sendSizeChanged({
+    width: width || 1200,
+    height: height || 720,
+  }).catch(() => undefined)
+  return app
+}) : null
 
 export const isStandalone = () => standalone
 
@@ -48,7 +58,8 @@ export async function sendCodexMessage(prompt: string): Promise<void> {
 
 export async function requestDisplayMode(mode: 'inline' | 'fullscreen'): Promise<void> {
   const connectedApp = await appReady
-  if (!connectedApp)
+  // Codex 重复进入同一模式时可能隐藏容器，却不再触发布局恢复。
+  if (!connectedApp || connectedApp.getHostContext()?.displayMode === mode)
     return
   await connectedApp.requestDisplayMode({ mode })
 }
