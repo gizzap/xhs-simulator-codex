@@ -1,0 +1,20 @@
+{
+  "name": "xhs-simulator-github",
+  "interface": {
+    "displayName": "XHS Simulator GitHub"
+  },
+  "plugins": [
+    {
+      "name": "xhs-simulator",
+      "source": {
+        "source": "local",
+        "path": "."
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

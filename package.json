@@ -1,0 +1,22 @@
+{
+  "name": "xhs-simulator-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build:web": "npm --prefix web run build",
+    "build": "npm run build:web && node ./scripts/build-plugin.mjs",
+    "check:artifacts": "node ./scripts/build-plugin.mjs --check",
+    "probe:mcp": "node ./scripts/probe-mcp.mjs",
+    "probe:mcp:cold": "node ./scripts/probe-cold-install.mjs",
+    "quality": "npm run build && npm run check:artifacts && npm run probe:mcp && npm run probe:mcp:cold"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "yaml": "^2.8.1",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.27.0"
+  }
+}

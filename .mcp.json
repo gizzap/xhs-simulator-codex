@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "xhs_simulator_mcp": {
+      "title": "XHS Simulator Widget MCP",
+      "description": "打开小红书评论模拟 Widget，并管理本机人设、运行结果和评论挑选结果。",
+      "command": "node",
+      "args": [
+        "./scripts/start-mcp.mjs"
+      ],
+      "cwd": "."
+    }
+  }
+}

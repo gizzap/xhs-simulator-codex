@@ -1,0 +1,12 @@
+.env
+node_modules/
+__pycache__/
+*.pyc
+report.md
+report.json
+.DS_Store
+data/runs/
+report_*.md
+report_*.json
+note_milk*.txt
+config/*.bak

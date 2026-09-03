@@ -1,0 +1,39 @@
+{
+  "name": "xhs-simulator",
+  "version": "0.1.0",
+  "description": "在 Codex 中打开本地小红书评论区压力测试 Widget，使用当前 Codex 会话完成模拟。",
+  "author": {
+    "name": "gizzap",
+    "url": "https://github.com/gizzap"
+  },
+  "homepage": "https://github.com/gizzap/xhs-simulator-codex",
+  "repository": "https://github.com/gizzap/xhs-simulator-codex",
+  "license": "MIT",
+  "keywords": [
+    "xiaohongshu",
+    "simulation",
+    "comments",
+    "widget"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "小红书评论模拟器",
+    "shortDescription": "用 Codex 做发布前评论区压力测试。",
+    "longDescription": "按需打开原生 Widget，选择本地人设并模拟小红书笔记发布后的反应、评论树与风险洞察；无需另配模型 API Key。",
+    "developerName": "gizzap",
+    "category": "Productivity",
+    "brandColor": "#F43F5E",
+    "capabilities": [
+      "Native Codex widget",
+      "Comment reaction simulation",
+      "Instruction-based comment selection",
+      "Local run history"
+    ],
+    "defaultPrompt": [
+      "打开小红书评论模拟器。",
+      "用小红书评论模拟器测试这篇笔记。",
+      "打开上一次小红书模拟结果。"
+    ]
+  }
+}
