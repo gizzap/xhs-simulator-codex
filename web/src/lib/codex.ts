@@ -7,7 +7,7 @@ interface ToolCallResult<T> {
 }
 
 const app = new App(
-  { name: 'XHS Simulator', version: '0.1.1' },
+  { name: 'XHS Simulator', version: '0.1.2' },
   { availableDisplayModes: ['inline', 'fullscreen'] },
   { autoResize: true, strict: true },
 )

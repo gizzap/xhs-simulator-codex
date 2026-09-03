@@ -35,6 +35,7 @@ codex plugin list
 
 ```bash
 codex plugin marketplace upgrade xhs-simulator-github
+codex plugin add xhs-simulator@xhs-simulator-github
 ```
 
 更新后完全退出并重新启动 Codex。

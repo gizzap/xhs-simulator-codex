@@ -73,14 +73,25 @@ const historyRuns = ref<RunSummary[]>([])
 const historyOpen = ref(false)
 
 // 左栏折叠状态（持久化）
-const leftCollapsed = ref(localStorage.getItem('xhs_left_collapsed') === '1')
+const leftCollapsed = ref(false)
+try {
+  leftCollapsed.value = localStorage.getItem('xhs_left_collapsed') === '1'
+}
+catch { /* Widget 沙箱可能禁止本地存储；折叠偏好不应阻止页面启动。 */ }
+
+function persistLeftCollapsed() {
+  try {
+    localStorage.setItem('xhs_left_collapsed', leftCollapsed.value ? '1' : '0')
+  }
+  catch { /* 存储不可用时保留当前页面内的状态。 */ }
+}
 function toggleLeft() {
   leftCollapsed.value = !leftCollapsed.value
-  localStorage.setItem('xhs_left_collapsed', leftCollapsed.value ? '1' : '0')
+  persistLeftCollapsed()
 }
 function expandLeft() {
   leftCollapsed.value = false
-  localStorage.setItem('xhs_left_collapsed', '0')
+  persistLeftCollapsed()
 }
 
 // ---------- 智能挑选 ----------

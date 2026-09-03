@@ -38,6 +38,7 @@ codex plugin list
 
 ```bash
 codex plugin marketplace upgrade xhs-simulator-github
+codex plugin add xhs-simulator@xhs-simulator-github
 ```
 
 仓库已经包含预构建的 MCP 和单文件 Widget，使用者不需要安装 npm/Python 依赖。Node.js 由 Codex 插件运行环境调用。
@@ -52,7 +53,16 @@ python3 /path/to/skill-creator/scripts/quick_validate.py skills/xhs-simulator
 ./web/node_modules/.bin/vue-tsc -p web/tsconfig.app.json --noEmit
 ```
 
-`npm run quality` 会重新构建 Vue、生成 `mcp/generated/xhs-widget.html` 与 `xhs-mcp.mjs`，再冷启动 MCP，验证 Widget 资源、人设读取、结果存取、最大余数配比和评论关系闭包。
+`npm run quality` 会重新构建 Vue、生成 `mcp/generated/xhs-widget.html` 与 `xhs-mcp.mjs`，检查内联脚本内容与语法，再冷启动 MCP，验证 Widget 资源、人设读取、结果存取、最大余数配比和评论关系闭包。
+
+发布前还需执行浏览器回归（维护者需安装 Python Playwright 和 Chromium，使用者无需安装）：
+
+```bash
+python3 scripts/probe-widget-render.py
+python3 scripts/probe-widget-render.py mcp/generated/xhs-widget.html --same-origin
+```
+
+浏览器测试执行实际发布 HTML，覆盖 iframe 可见性、初始化握手、人设加载、侧栏折叠、全屏请求和模拟消息交接；宿主与工具数据使用本地测试夹具，不调用模型。MCP 工具返回成功不能代替 Codex 客户端中的实际显示确认。
 
 ## 实现说明
 

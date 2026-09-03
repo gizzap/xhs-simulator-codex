@@ -92,7 +92,7 @@ async function inlineWidget() {
       return "";
     },
   );
-  html = html.replace("</body>", `${scripts.join("\n")}\n</body>`);
+  html = html.replace("</body>", () => `${scripts.join("\n")}\n</body>`);
 
   if (/\b(?:src|href)="[^"]*\/assets\//i.test(html)) {
     throw new Error("Widget 仍引用外部构建资源。");
